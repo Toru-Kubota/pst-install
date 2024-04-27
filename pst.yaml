@@ -1,0 +1,172 @@
+---
+- hosts: pst
+  become: yes
+
+  tasks:
+    # 必要なパッケージをインストール
+    - name: Install Package
+      apt:
+        name:
+          - python3-psycopg2
+          - unzip
+          - nginx
+        state: present
+
+    # .NET 8.0インストーラーをダウンロード、インストール
+    # .NET 8.0がインストールされている場合はスキップ
+    - name: Check if .NET 8.0 is installed
+      command: dotnet --version
+      register: dotnet_check
+      failed_when: false
+      changed_when: false
+
+    - block:
+        - name: Download .NET 8.0 installer
+          get_url:
+            url: https://dot.net/v1/dotnet-install.sh
+            dest: /tmp/dotnet-install.sh
+            mode: 0755
+
+        - name: Install .NET 8.0
+          shell: /tmp/dotnet-install.sh -c 8.0 -i /usr/local/bin
+
+        - name: Verify .NET 8.0 installation
+          shell: dotnet --version
+          register: dotnet_version
+
+        - name: Remove .NET installer script
+          file:
+            path: /tmp/dotnet-install.sh
+            state: absent
+      when: dotnet_check.rc != 0
+
+    # PostgreSQLのインストール
+    - name: Add PostgreSQL repository to sources list
+      shell: |
+        echo "deb http://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" > /etc/apt/sources.list.d/pgdg.list
+    - name: Import PostgreSQL repository key
+      get_url:
+        url: https://www.postgresql.org/media/keys/ACCC4CF8.asc
+        dest: /tmp/pgdg.asc
+        mode: '0644'
+
+    - name: Add PostgreSQL repository key
+      apt_key:
+        file: /tmp/pgdg.asc
+        state: present
+
+    - name: Clean up
+      file:
+        path: /tmp/pgdg.asc
+        state: absent
+    - name: Install PostgreSQL
+      apt:
+        name:
+          - postgresql
+          - postgresql-contrib
+        state: present
+
+    # PostgreSQLユーザのパスワードを設定
+    - name: Set PostgreSQL user password
+      become_user: postgres
+      postgresql_user:
+        name: postgres
+        password: "{{ postgres_password }}" 
+
+    # PostgreSQLのログ出力設定
+    - name: copy postgresql.conf
+      template:
+        src: ./files/postgresql.conf.j2
+        dest: /etc/postgresql/16/main/postgresql.conf
+        owner: postgres
+        group: postgres
+        mode: 0644
+
+    # 外部からDBへのアクセスを許可する場合の設定
+    - name: copy pg_hba.conf 
+      template:
+        src: ./files/pg_hba.conf.j2
+        dest: /etc/postgresql/16/main/pg_hba.conf 
+        owner: postgres
+        group: postgres
+        mode: 0640
+
+    # PostgreSQLのサービス起動、サービス化
+    - name: Enable and start PostgreSQL service
+      systemd:
+        name: postgresql
+        enabled: yes
+        state: restarted
+
+    # アプリケーションの準備
+    - name: Create web directory
+      file:
+        path: /web
+        state: directory
+    - name: Download Pleasanter
+      unarchive:
+        src: "{{ pst_pkg_url }}"
+        remote_src: yes
+        dest: /web
+        creates: /web/pleasanter
+        owner: "{{ pst_user }}"
+        group: "{{ pst_group }}"
+
+    # データベースの構成
+    - name: copy Rds.json 
+      template:
+        src: ./files/Rds.json.j2
+        dest: /web/pleasanter/Implem.Pleasanter/App_Data/Parameters/Rds.json
+        owner: "{{ pst_user }}"
+        group: "{{ pst_group }}"
+        mode: 0644
+
+    # CodeDefinerの実行
+    - name: Run CodeDefiner
+      command: /usr/local/bin/dotnet Implem.CodeDefiner.dll _rds
+      args:
+        chdir: /web/pleasanter/Implem.CodeDefiner
+      become_user: "{{ pst_user }}"
+
+
+   # Pleasanterサービス用スクリプトの作成
+    - name: copy pleasanter.service
+      template:
+        src: ./files/pleasanter.service.j2
+        dest: /etc/systemd/system/pleasanter.service
+        owner: "{{ pst_user }}"
+        group: "{{ pst_group }}"
+        mode: 0644
+
+    # サービスとして登録・サービスの起動
+    - name: Enable and start Pleasanter service
+      systemd:
+        name: pleasanter
+        enabled: yes
+        daemon_reload: yes
+        state: restarted
+
+    # リバースプロキシの設定
+    - name: copy pleasanter.conf
+      template:
+        src: ./files/pleasanter.conf.j2
+        dest: /etc/nginx/conf.d/pleasanter.conf
+        owner: "{{ pst_user }}"
+        group: "{{ pst_group }}"
+        mode: 0644
+    - name: Remove default Nginx configuration
+      file:
+        path: /etc/nginx/sites-enabled/default
+        state: absent        
+    - name: Enable and start nginx service
+      systemd:
+        name: nginx
+        enabled: yes
+        state: restarted
+
+    # Firewall無効化
+    - name: Disable and stop ufw service
+      systemd:
+        name: ufw
+        enabled: no
+        state: stopped

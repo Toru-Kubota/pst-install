@@ -1,0 +1,6 @@
+postgres_password: "password"
+pg_allowed_ip: "127.0.0.1/32"
+pst_pkg_url: "https://github.com/Implem/Implem.Pleasanter/releases/download/Pleasanter_1.4.3.1/Pleasanter_1.4.3.1.zip"
+pst_user: "root"
+pst_group: "root"
+server_name: "_"
